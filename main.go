@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -51,7 +52,7 @@ type MqttStatics struct {
 	start          time.Time
 	clients        int32
 	connected      int32
-	disconnected   int32
+	lost_con       int32
 	msg_up         int32
 	msg_down       int32
 	msg_success    int32
@@ -83,32 +84,44 @@ type MqttClient struct {
 
 var m_statics MqttStatics
 
-func (c *MqttClient) MessageHandler(client mqtt.Client, msg mqtt.Message) {
-	fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
-
+func MessageHandler(client mqtt.Client, msg mqtt.Message) {
 	atomic.AddInt32(&m_statics.msg_down, 1)
 	atomic.AddInt32(&m_statics.msg_total, 1)
 	m_statics.msg_down_rater.Incr(1)
 }
 
-func (c *MqttClient) SubscribedTopics(client mqtt.Client) {
-	topic := "thing/" + c.sn + "/desired"
-	token := client.Subscribe(topic, 0, c.MessageHandler)
+var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
+	atomic.AddInt32(&m_statics.connected, 1)
+	m_statics.client_rater.Incr(1)
+
+	SubscribedTopics(client)
+}
+
+var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
+	atomic.AddInt32(&m_statics.connected, -1)
+	atomic.AddInt32(&m_statics.lost_con, 1)
+	reader := client.OptionsReader()
+	fmt.Printf("%s lost conection : %s\n", reader.ClientID(), err.Error())
+}
+
+func SubscribedTopics(client mqtt.Client) {
+	reader := client.OptionsReader()
+
+	topic := "thing/" + reader.ClientID() + "/desired"
+	token := client.Subscribe(topic, 0, MessageHandler)
 	token.Wait()
 
-	topic = "thing/" + c.sn + "/control"
-	token = client.Subscribe(topic, 0, c.MessageHandler)
+	topic = "thing/" + reader.ClientID() + "/control"
+	token = client.Subscribe(topic, 0, MessageHandler)
 	token.Wait()
 }
 
 func (c *MqttClient) Ticker(config *MqttConfig, client mqtt.Client, wg *sync.WaitGroup) {
 	start := time.Now()
 
-	c.UpdateData(config, client, start)
-
 	for {
 		select {
-		case <-time.After(30 * time.Second):
+		case <-time.After(60 * time.Second):
 			c.UpdateData(config, client, start)
 		}
 	}
@@ -121,14 +134,16 @@ func (c *MqttClient) UpdateData(config *MqttConfig, client mqtt.Client, start ti
 	text := c.thingString(client, start)
 	topic := "thing/" + c.sn + "/data"
 	token := client.Publish(topic, 0, false, text)
-	token.Wait()
+	go func() {
+		token.Wait()
 
-	if token.Error() != nil {
-		panic(token.Error())
-	} else {
-		atomic.AddInt32(&m_statics.msg_success, 1)
-		m_statics.msg_up_rater.Incr(1)
-	}
+		if token.Error() != nil {
+			fmt.Println(token.Error())
+		} else {
+			atomic.AddInt32(&m_statics.msg_success, 1)
+			m_statics.msg_up_rater.Incr(1)
+		}
+	}()
 }
 
 func (c *MqttClient) thingString(client mqtt.Client, start time.Time) string {
@@ -168,21 +183,25 @@ func (c *MqttClient) thingString(client mqtt.Client, start time.Time) string {
 	return string(j)
 }
 
-var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-	atomic.AddInt32(&m_statics.connected, 1)
-	m_statics.client_rater.Incr(1)
-}
-
-var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-	atomic.AddInt32(&m_statics.connected, -1)
-	atomic.AddInt32(&m_statics.disconnected, 1)
-}
-
 func client(config *MqttConfig, sn string, chipid string, wg *sync.WaitGroup) {
+	defer func() {
+		if e := recover(); e != nil {
+			log.Printf("recover: %v", e)
+		}
+	}()
+
 	atomic.AddInt32(&m_statics.clients, 1)
 	defer atomic.AddInt32(&m_statics.clients, -1)
-
 	defer wg.Done()
+
+	mqttC := MqttClient{
+		config: config,
+		sn:     sn,
+		chipid: chipid,
+		brand:  "define",
+		model:  "sf8008",
+		oui:    "aoui",
+	}
 
 	opts := mqtt.NewClientOptions().AddBroker(config.host + ":" + fmt.Sprint(config.port))
 	opts.SetClientID(sn)
@@ -196,16 +215,6 @@ func client(config *MqttConfig, sn string, chipid string, wg *sync.WaitGroup) {
 	}
 
 	defer client.Disconnect(250)
-
-	mqttC := MqttClient{
-		config: config,
-		sn:     sn,
-		chipid: chipid,
-		brand:  "define",
-		model:  "sf8008",
-		oui:    "aoui",
-	}
-
 	mqttC.Ticker(config, client, wg)
 }
 
@@ -229,11 +238,13 @@ func static() {
 		fmt.Fprintf(writer5, "\t message down(%d) /rate %d \n", m_statics.msg_down, m_statics.msg_down_rater.Hits())
 		fmt.Fprintf(writer6, "\t latency %dms \n", m_statics.lag)
 
-		time.Sleep(time.Millisecond * 100)
+		time.Sleep(time.Millisecond * 500)
 	}
 }
 
 func bench(config *MqttConfig) {
+	go static()
+
 	wg := new(sync.WaitGroup)
 	m_statics.start = time.Now()
 	m_statics.client_rater = ratecounter.NewAvgRateCounter(1 * time.Second)
@@ -246,8 +257,10 @@ func bench(config *MqttConfig) {
 
 		wg.Add(1)
 		go client(config, clientId, chipid, wg)
+		time.Sleep(time.Millisecond * 5)
 	}
 
+	fmt.Printf("bench started of client: %d\n", config.total)
 	wg.Wait()
 }
 
@@ -271,7 +284,5 @@ func main() {
 		os.Exit(0)
 	}
 
-	go static()
 	bench(&config)
-
 }
