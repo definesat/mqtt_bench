@@ -119,6 +119,8 @@ func SubscribedTopics(client mqtt.Client) {
 func (c *MqttClient) Ticker(config *MqttConfig, client mqtt.Client, wg *sync.WaitGroup) {
 	start := time.Now()
 
+	c.UpdateData(config, client, start)
+
 	for {
 		select {
 		case <-time.After(60 * time.Second):
