@@ -69,6 +69,7 @@ type MqttConfig struct {
 	total    int
 	qps      int
 	interval int
+	index    int
 	mode     string
 }
 
@@ -254,7 +255,7 @@ func bench(config *MqttConfig) {
 	m_statics.msg_down_rater = ratecounter.NewAvgRateCounter(1 * time.Second)
 
 	for i := 0; i < config.total; i++ {
-		var clientId = uuid.New().String()
+		var clientId = "benchmark_" + fmt.Sprint(i+config.index) //uuid.New().String()
 		var chipid = uuid.New().String()
 
 		wg.Add(1)
@@ -262,7 +263,6 @@ func bench(config *MqttConfig) {
 		time.Sleep(time.Millisecond * 5)
 	}
 
-	fmt.Printf("bench started of client: %d\n", config.total)
 	wg.Wait()
 }
 
@@ -270,12 +270,13 @@ func main() {
 	var config MqttConfig
 
 	var help = flag.Bool("help", false, "Show help")
-	flag.StringVar(&config.host, "host", "localhost", "host address")
-	flag.IntVar(&config.port, "port", 1883, "host port")
-	flag.IntVar(&config.total, "t", 100, "total")
-	flag.IntVar(&config.qps, "c", 1000, "connect speed per second")
-	flag.IntVar(&config.interval, "i", 30, "interval in second")
-	flag.StringVar(&config.mode, "mode", "normal", "host address")
+	flag.StringVar(&config.host, "h", "localhost", "host address")
+	flag.IntVar(&config.port, "p", 1883, "host port")
+	flag.IntVar(&config.total, "c", 100, "client number")
+	flag.IntVar(&config.qps, "q", 1000, "connect speed per second")
+	flag.IntVar(&config.interval, "a", 30, "message interval in second")
+	flag.IntVar(&config.index, "i", 1, "client id start")
+	flag.StringVar(&config.mode, "m", "normal", "benchmark mode")
 
 	// Parse the flag
 	flag.Parse()
@@ -285,6 +286,8 @@ func main() {
 		flag.Usage()
 		os.Exit(0)
 	}
+
+	fmt.Printf("bench started of client: %d from index : %d\n", config.total, config.index)
 
 	bench(&config)
 }
