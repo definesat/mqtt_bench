@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -71,6 +73,9 @@ type MqttConfig struct {
 	interval int
 	index    int
 	mode     string
+	oui      string
+	model    string
+	brand    string
 }
 
 type MqttClient struct {
@@ -124,7 +129,7 @@ func (c *MqttClient) Ticker(config *MqttConfig, client mqtt.Client, wg *sync.Wai
 
 	for {
 		select {
-		case <-time.After(60 * time.Second):
+		case <-time.After(time.Duration(config.interval) * time.Second):
 			c.UpdateData(config, client, start)
 		}
 	}
@@ -186,6 +191,59 @@ func (c *MqttClient) thingString(client mqtt.Client, start time.Time) string {
 	return string(j)
 }
 
+func register(host string, uuid string, oui string, model string, brand string, chipid string) bool {
+	url := "http://" + host + "/" + "iot/device/register"
+
+	type deviceRegister struct {
+		Uuid   string `json:"uuid"`
+		Oui    string `json:"oui"`
+		Model  string `json:"model"`
+		Brand  string `json:"brand"`
+		ChipId string `json:"chipid"`
+	}
+
+	device := new(deviceRegister)
+	device.Oui = oui
+	device.Uuid = uuid
+	device.Model = model
+	device.Brand = brand
+	device.ChipId = chipid
+
+	content, err := json.Marshal(device)
+	if err != nil {
+		panic(err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(content))
+	if err != nil {
+		panic(err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == 200
+	// body, err := ioutil.ReadAll(resp.Body)
+	// if err != nil {
+	// 	panic(err)
+	// }
+
+	// var result IotDeviceResponse
+	// if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
+	// 	fmt.Println("Can not unmarshal JSON")
+	// }
+
+	// fmt.Print(string(body))
+
+	// return result.Secret
+}
+
 func client(config *MqttConfig, sn string, chipid string, wg *sync.WaitGroup) {
 	defer func() {
 		if e := recover(); e != nil {
@@ -201,9 +259,14 @@ func client(config *MqttConfig, sn string, chipid string, wg *sync.WaitGroup) {
 		config: config,
 		sn:     sn,
 		chipid: chipid,
-		brand:  "define",
-		model:  "sf8008",
-		oui:    "aoui",
+		brand:  config.brand,
+		model:  config.model,
+		oui:    config.oui,
+	}
+
+	if register(config.host, sn, config.oui, config.model, config.brand, chipid) != true {
+		log.Printf("register failed %v", sn)
+		return
 	}
 
 	opts := mqtt.NewClientOptions().AddBroker(config.host + ":" + fmt.Sprint(config.port))
@@ -274,7 +337,7 @@ func main() {
 	flag.IntVar(&config.port, "p", 1883, "host port")
 	flag.IntVar(&config.total, "c", 100, "client number")
 	flag.IntVar(&config.qps, "q", 1000, "connect speed per second")
-	flag.IntVar(&config.interval, "a", 30, "message interval in second")
+	flag.IntVar(&config.interval, "s", 120, "message interval in second")
 	flag.IntVar(&config.index, "i", 1, "client id start")
 	flag.StringVar(&config.mode, "m", "normal", "benchmark mode")
 
