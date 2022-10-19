@@ -264,10 +264,10 @@ func client(config *MqttConfig, sn string, chipid string, wg *sync.WaitGroup) {
 		oui:    config.oui,
 	}
 
-	if register(config.host, sn, config.oui, config.model, config.brand, chipid) != true {
-		log.Printf("register failed %v", sn)
-		return
-	}
+	// if register(config.host, sn, config.oui, config.model, config.brand, chipid) != true {
+	// 	log.Printf("register failed %v", sn)
+	// 	return
+	// }
 
 	opts := mqtt.NewClientOptions().AddBroker(config.host + ":" + fmt.Sprint(config.port))
 	opts.SetClientID(sn)
